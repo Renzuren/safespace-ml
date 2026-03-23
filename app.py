@@ -1,12 +1,9 @@
 # app.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import torch
 import numpy as np
 from transformers import BertTokenizer, BertModel
-import uvicorn
-import os
-import gdown
 
 # Configuration
 class Config:
@@ -80,67 +77,73 @@ class HarassmentModel(torch.nn.Module):
         combined = torch.cat([torch.max(attn_out, dim=1)[0], torch.mean(attn_out, dim=1)], dim=1)
         return self.classifier(self.dropout(combined))
 
-# Download model from Google Drive if not exists
-MODEL_PATH = 'best_model.pt'
-if not os.path.exists(MODEL_PATH):
-    print("Downloading model from Google Drive...")
-    # Google Drive file ID from your link
-    file_id = '1ReNeUquhOq56ExK4AHUFEKsi0IK5vWQV'
-    url = f'https://drive.google.com/uc?id={file_id}'
-    gdown.download(url, MODEL_PATH, quiet=False)
-    print("Model downloaded successfully!")
-
 # Load Model
-print("Loading tokenizer...")
+print("Loading tokenizer and model...")
 tokenizer = BertTokenizer.from_pretrained(config.BERT_MODEL)
-
-print("Loading model...")
 model = HarassmentModel(config)
-model.load_state_dict(torch.load(MODEL_PATH, map_location=config.DEVICE))
+model.load_state_dict(torch.load('best_model.pt', map_location=config.DEVICE))
 model.to(config.DEVICE)
 model.eval()
-print(f"Model loaded on {config.DEVICE}")
+print(f"Model loaded successfully on {config.DEVICE}")
 
 LABELS = ['Physical Harassment', 'Verbal Harassment', 'Non-Verbal Harassment', 'Not Harassment', 'Cyber Sexual Harassment']
 
-# FastAPI App
-app = FastAPI(title="Harassment Detection Microservice")
+# Flask App
+app = Flask(__name__)
+CORS(app)  # Enable CORS for cross-origin requests
 
-class IncidentRequest(BaseModel):
-    description: str
-
-class IncidentResponse(BaseModel):
-    label: str
-    confidence: float
-    probabilities: dict
-
-@app.post("/predict", response_model=IncidentResponse)
-async def predict(request: IncidentRequest):
+@app.route('/predict', methods=['POST'])
+def predict():
     try:
+        data = request.get_json()
+        
+        if not data or 'description' not in data:
+            return jsonify({'error': 'Missing description field'}), 400
+        
+        description = data['description']
+        
+        # Tokenize input
         inputs = tokenizer(
-            request.description,
+            description,
             max_length=config.MAX_LENGTH,
             padding='max_length',
             truncation=True,
             return_tensors='pt'
         )
         
+        # Make prediction
         with torch.no_grad():
             outputs = model(inputs['input_ids'].to(config.DEVICE), inputs['attention_mask'].to(config.DEVICE))
             probs = torch.softmax(outputs, dim=1).cpu().numpy()[0]
             pred_idx = np.argmax(probs)
         
-        return IncidentResponse(
-            label=LABELS[pred_idx],
-            confidence=float(probs[pred_idx]),
-            probabilities={label: float(probs[i]) for i, label in enumerate(LABELS)}
-        )
+        # Return response
+        return jsonify({
+            'label': LABELS[pred_idx],
+            'confidence': float(probs[pred_idx]),
+            'probabilities': {label: float(probs[i]) for i, label in enumerate(LABELS)}
+        })
+    
     except Exception as e:
-        raise HTTPException(500, str(e))
+        return jsonify({'error': str(e)}), 500
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy", "device": str(config.DEVICE)}
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'healthy',
+        'device': str(config.DEVICE)
+    })
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'service': 'Harassment Detection Microservice',
+        'endpoints': {
+            '/predict': 'POST - Detect harassment from text',
+            '/health': 'GET - Check service health'
+        }
+    })
+
+if __name__ == '__main__':
+    # Run Flask app
+    app.run(host='0.0.0.0', port=8000, debug=False)
