@@ -1,14 +1,5 @@
-# requirements.txt
 flask
 flask-cors
 torch
-numpy
-scikit-learn
-pandas
-fastapi
-uvicorn
-torch
 transformers
 numpy
-python-multipart
-gdown
