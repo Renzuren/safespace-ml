@@ -3,3 +3,6 @@ flask-cors
 torch
 transformers
 numpy
+boto3
+botocore
+requests
